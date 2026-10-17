@@ -15,6 +15,7 @@ import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.text.DateFormat
 import java.time.Duration
+import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
@@ -29,17 +30,18 @@ class FtpClient(override val site: Site, private val trust: TrustStore) : Remote
     private fun client() = ftp ?: throw IOException("Not connected")
 
     override fun connect() {
-        val c = when (site.protocol) {
-            Protocol.FTPES -> FTPSClient("TLS", false)
-            Protocol.FTPS -> FTPSClient("TLS", true)
-            else -> CommonsFtp()
-        }
-        if (c is FTPSClient) {
+        var tls: SSLContext? = null
+        if (site.protocol.isTls) {
             val tm = PinningTrustManager(site.host, site.port, trust)
             trustManager = tm
-            c.trustManager = tm
-            c.setEndpointCheckingEnabled(false) // hostname is checked by PinningTrustManager
+            tls = SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), null) }
         }
+        val c = when (site.protocol) {
+            Protocol.FTPES -> FTPSClient(false, tls)
+            Protocol.FTPS -> FTPSClient(true, tls)
+            else -> CommonsFtp()
+        }
+        if (c is FTPSClient) c.setEndpointCheckingEnabled(false) // hostname is checked by PinningTrustManager
         if (site.encoding == Site.ENCODING_AUTO) {
             c.controlEncoding = "UTF-8"
             c.autodetectUTF8 = true
@@ -67,9 +69,11 @@ class FtpClient(override val site: Site, private val trust: TrustStore) : Remote
             close()
             throw IOException(msg.ifEmpty { "Server refused connection" })
         }
-        if (c is FTPSClient) {
+        if (c is FTPSClient && tls != null) {
             c.execPBSZ(0)
             c.execPROT("P")
+            // Data connections must resume the control session on many servers.
+            c.setSocketFactory(SessionReuseSocketFactory(tls.socketFactory, site.host, site.port))
         }
         val user = site.effectiveUser
         val pass = if (site.anonymous && site.protocol.isFtp) "glassftp@example.com" else site.password
@@ -195,6 +199,22 @@ class FtpClient(override val site: Site, private val trust: TrustStore) : Remote
         override fun protocolReplyReceived(event: ProtocolCommandEvent) {
             event.message.orEmpty().lineSequence().forEach { AppLog.reply(tag, it) }
         }
+    }
+}
+
+object FtpErrors {
+    /** Implicit TLS was used against a server that greets in plain text (usually port 21). */
+    fun isPlaintextReply(e: Throwable): Boolean = generateSequence(e) { it.cause }.any { t ->
+        val m = t.message.orEmpty().lowercase()
+        listOf("parse tls packet header", "unrecognized ssl message", "plaintext", "wrong_version_number",
+            "wrong version number", "packet length too long", "http_request").any { m.contains(it) }
+    }
+
+    /** The server refused a login because it requires TLS. */
+    fun requiresTls(e: Throwable): Boolean {
+        val m = e.message.orEmpty().lowercase()
+        return m.startsWith("534") || listOf("tls", "ssl", "encrypt", "secure").any { m.contains(it) } &&
+            (m.startsWith("530") || m.startsWith("550") || m.startsWith("521") || m.contains("required") || m.contains("policy"))
     }
 }
 

@@ -58,8 +58,10 @@ class SitesScreen(nav: Navigator) : Screen(nav) {
         quick.addRow(ctx.hbox {
             setPadding(12.dp, 12.dp, 12.dp, 12.dp)
             addView(Segmented(ctx, Protocol.entries.map { it.label }, qProtocol.ordinal) { i ->
+                val old = qProtocol
                 qProtocol = Protocol.entries[i]
                 portField.hint = qProtocol.defaultPort.toString()
+                if (qPort.trim() == old.defaultPort.toString()) portField.setText("")
             }, linear(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         })
         quick.addRow(ctx.fieldRow(str(R.string.host), ctx.field("ftp.example.com", qHost,

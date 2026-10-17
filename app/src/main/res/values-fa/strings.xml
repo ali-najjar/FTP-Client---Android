@@ -215,4 +215,5 @@
     <string name="username">نام کاربری</string>
     <string name="version">نسخه %1$s</string>
     <string name="where">محل</string>
+    <string name="switched_protocol">سرور از %1$s استفاده می‌کند — خودکار تغییر کرد</string>
 </resources>

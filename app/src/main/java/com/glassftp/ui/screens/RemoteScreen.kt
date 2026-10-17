@@ -13,6 +13,7 @@ import com.glassftp.R
 import com.glassftp.core.AppLog
 import com.glassftp.core.FileKind
 import com.glassftp.core.FileShareProvider
+import com.glassftp.core.FtpErrors
 import com.glassftp.core.Format
 import com.glassftp.core.LoginFailedException
 import com.glassftp.core.Protocol
@@ -135,6 +136,7 @@ class RemoteScreen(nav: Navigator, site: Site) : BrowserScreen(nav) {
 
     /** Opens a connection, asking the user to trust unknown certificates/host keys and fix bad passwords. */
     private suspend fun open(): RemoteClient {
+        val tried = mutableSetOf(site.protocol)
         while (true) {
             val c = RemoteClient.create(site, App.trust)
             try {
@@ -146,13 +148,35 @@ class RemoteScreen(nav: Navigator, site: Site) : BrowserScreen(nav) {
                 App.trust.trust(e.key, e.fingerprint)
             } catch (e: LoginFailedException) {
                 withContext(Dispatchers.IO) { c.close() }
+                if (site.protocol == Protocol.FTP && FtpErrors.requiresTls(e) && tried.add(Protocol.FTPES)) {
+                    switchProtocol(Protocol.FTPES)
+                    continue
+                }
                 if (site.anonymous) throw e
                 val pw = overlay.prompt(str(R.string.login_failed), e.message,
                     OverlayHost.Input(str(R.string.password), "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD),
                     str(R.string.connect), str(R.string.cancel)) ?: throw IOException(str(R.string.connection_cancelled))
                 site = site.copy(password = pw)
+            } catch (e: IOException) {
+                withContext(Dispatchers.IO) { c.close() }
+                val next = when {
+                    site.protocol == Protocol.FTPS && FtpErrors.isPlaintextReply(e) -> Protocol.FTPES
+                    site.protocol == Protocol.FTP && FtpErrors.requiresTls(e) -> Protocol.FTPES
+                    site.protocol == Protocol.FTPES && site.port == 990 -> Protocol.FTPS
+                    else -> null
+                }
+                if (next == null || !tried.add(next)) throw e
+                switchProtocol(next)
             }
         }
+    }
+
+    /** Corrects a protocol mix-up (e.g. implicit FTPS on port 21) and remembers it for saved sites. */
+    private fun switchProtocol(p: Protocol) {
+        AppLog.status(site.displayName, "Server expects ${p.label}; retrying with ${p.label}")
+        site = site.copy(protocol = p)
+        if (App.sites.get(site.id) != null) App.sites.get(site.id)?.let { App.sites.save(it.copy(protocol = p)) }
+        overlay.toast(str(R.string.switched_protocol, p.label), R.drawable.ic_lock, Theme.green)
     }
 
     private suspend fun ensurePassword(s: Site): Site? {

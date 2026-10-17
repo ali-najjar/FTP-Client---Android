@@ -216,4 +216,5 @@
     <string name="username">Username</string>
     <string name="version">Version %1$s</string>
     <string name="where">Where</string>
+    <string name="switched_protocol">Server uses %1$s — switched automatically</string>
 </resources>
